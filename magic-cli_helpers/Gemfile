@@ -1,0 +1,6 @@
+source 'https://rubygems.org'
+git_source(:gitlab) { |n| "https://git.digitalsmiths.com/#{n}.git" }
+
+gem 'gitlab'
+gem 'mixlib-shellout'
+gem 'pcd-docker', '>= 0.10.0', :gitlab => 'product/pcd-docker'

@@ -1,15 +1,59 @@
 #!/usr/bin/env ruby
 
-COMMAND_DIR = File.expand_path(File.dirname(__FILE__))
-BASENAME = File.basename(__FILE__)
-PREFIX = "#{BASENAME}-"
-
+require 'shellwords'
+require 'yaml'
+require 'time'
 
 class MagicCli
     attr_reader :commands
 
+    COMMAND_DIR = File.expand_path(File.dirname(__FILE__))
+    BASENAME = File.basename(__FILE__)
+    HELPERS_DIR = File.join(COMMAND_DIR, BASENAME + "_helpers")
+    SOURCE_REPO = YAML::load_file(File.join(HELPERS_DIR, BASENAME + ".yaml"))[BASENAME]["repo"]
+    UPDATE_CHECK = File.join(File.expand_path(ENV['HOME']), ".#{BASENAME}-update-check")
+
     def initialize()
-        @commands = Dir.glob(File.join(File.dirname(__FILE__), "#{PREFIX}*"))
+        @commands = Dir.glob(File.join(File.dirname(__FILE__), "#{BASENAME}-*"))
+    end
+
+    def get_current_version
+      ds_version = "#{COMMAND_DIR}/#{BASENAME}-version"
+      if File.exist?(ds_version)
+        version_line = File.open(ds_version).readlines.detect(":") do |line|
+          line.include?("version:")
+        end
+        version_line.split(":").last.strip.chop
+      end
+    end
+
+    def get_remote_version
+      `git ls-remote #{SOURCE_REPO} master 2> /dev/null`[0, 7]
+    end
+
+    def check_for_update?
+      begin
+        last_update = File.open(UPDATE_CHECK).read.to_i
+      rescue
+        last_update = 0
+      end
+      write_update_check!
+      (Time.now - Time.at(last_update)) > (60 * 60 * 24) # Only check if its been 24 since last update
+    end
+
+    def write_update_check!
+      File.open(UPDATE_CHECK, 'w') do |update_file|
+        update_file.write(Time.now.to_i.to_s) # Writes epoch to string inside file
+      end
+    end
+
+    def update_available?
+      if check_for_update?
+        print "Checking for update to tools ...\r"
+        get_current_version != get_remote_version
+      else
+        false
+      end
     end
 
     def list_commands
@@ -20,16 +64,18 @@ class MagicCli
             # Remove the `BASENAME-` PREFIX from the filename to get the name of the subcommand
             subcommand = File.basename(filename)[(BASENAME.size + 1)..-1]
             subcommands.push({
-                :name => [subcommand, parameters].join(" "),
+                :name => subcommand,
+                :parameters => parameters,
                 :description => description
             })
         end
         max_subcommand_name_length = subcommands.map{ |subcommand| subcommand[:name].length }.max
+        max_parameters_length = subcommands.map{ |subcommand| subcommand[:parameters].length }.max
 
         subcommands
            .sort_by { |subcommand| subcommand[:name] }
            .each do |subcommand|
-               puts "   %-#{max_subcommand_name_length}s   %s" % [subcommand[:name], subcommand[:description]]
+               puts "   %-#{max_subcommand_name_length}s  %-#{max_parameters_length}s  %s" % [subcommand[:name], subcommand[:parameters], subcommand[:description]]
            end
     end
 
@@ -47,8 +93,7 @@ class MagicCli
     def get_parameters(filename)
       # Optionally, retrieve parameters that are required
       lines = File.readlines(filename)
-      header = lines.take_while{|l| l.strip.start_with?('#')}
-      parameters = header.map do |line|
+      parameters = lines.map do |line|
         if line.strip.start_with?('# @param')
           line = line.strip.sub(/^# @param\s*/, '').sub(/-.*$/, '').strip
           line = "<param>" if line.empty?
@@ -61,13 +106,13 @@ class MagicCli
     end
 
     def execute(command, args)
-        executable = File.join(COMMAND_DIR, PREFIX + command)
+        executable = File.join(COMMAND_DIR, BASENAME + '-' + command)
         unless File.exist?(executable)
             puts "I don't know how to #{command}. :("
             abort
         end
 
-        exec executable, *ARGV
+        exec executable.shellescape, *ARGV
     end
 end
 
@@ -75,12 +120,18 @@ command = ARGV.shift
 cli = MagicCli.new
 case command
     when nil, '--help', '-h'
-        puts "usage: #{BASENAME} <command> [<args>]"
+
+        puts "usage: #{MagicCli::BASENAME} <command> [<args>]"
         puts ''
+
+        if cli.update_available?
+          puts "New update available! Run `#{MagicCli::BASENAME} update` to get latest version!"
+          puts ''
+        end
 
         if cli.commands.empty?
             puts 'Hrm, there are no commands for me to run.'
-            puts "I can run any executables in #{COMMAND_DIR} which have filenames that start with `#{PREFIX}`."
+            puts "I can run any executables in #{MagicCli::COMMAND_DIR} which have filenames that start with `#{MagicCli::BASENAME}-`."
             abort
         else
             puts 'Commands:'
@@ -88,6 +139,10 @@ case command
         end
     when '--list', '-l'
         cli.list_commands
+    when '--path', '-p'
+        puts MagicCli::COMMAND_DIR
+    when '--helpers-path'
+        puts MagicCli::HELPERS_DIR
     else
         cli.execute(command, ARGV)
 end
